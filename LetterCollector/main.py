@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 import random
@@ -21,15 +22,22 @@ BUTTON_FG = "#e6e9ef"
 BUTTON_ACTIVE_BG = "#4a4f53"
 BUTTON_ACTIVE_FG = "#ffffff"
 BUTTON_BORDER = "#5a5d60"
+SIDEBAR_BG = "#232323"
 
 class LetterCollectorApp:
     def __init__(self, master):
         self.master = master
         master.title("Letter Collector")
         master.geometry("+50+50")
-        master.config(padx=15, pady=15, bg=BG_COLOR)
+        master.config(bg=BG_COLOR)
 
         self.setup_directories()
+
+        # Collection mode settings
+        self.repeat_count = tk.IntVar(value=1)  # How many times to repeat each letter
+        self.alphabetical_mode = tk.BooleanVar(value=False)  # Alphabetical vs random
+        self.current_letter_index = 0  # Current letter index (for alphabetical mode)
+        self.current_repeat = 0  # Current repeat counter
 
         self.target_letter = None
         self.is_stats_view = False
@@ -45,8 +53,19 @@ class LetterCollectorApp:
         self.has_drawing = False
         self.temp_noise_photo = None
 
+        # Main layout: sidebar + content
+        self.main_frame = tk.Frame(master, bg=BG_COLOR)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Sidebar
+        self._create_sidebar()
+
+        # Content area
+        self.content_frame = tk.Frame(self.main_frame, bg=BG_COLOR, padx=15, pady=15)
+        self.content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         self.label = tk.Label(
-            master,
+            self.content_frame,
             text="Nakresli písmeno",
             font=("Arial", 24),
             bg=BG_COLOR,
@@ -54,9 +73,19 @@ class LetterCollectorApp:
         )
         self.label.pack(pady=(10, 4))
 
+        # Progress label (shows e.g., "A (2/5)")
+        self.progress_label = tk.Label(
+            self.content_frame,
+            text="",
+            font=("Arial", 12),
+            bg=BG_COLOR,
+            fg="#888888",
+        )
+        self.progress_label.pack(pady=(0, 4))
+
         self.noise_var = tk.BooleanVar(value=False)
         self.canvas = tk.Canvas(
-            master,
+            self.content_frame,
             width=CANVAS_SIZE,
             height=CANVAS_SIZE,
             bg="black",
@@ -67,7 +96,7 @@ class LetterCollectorApp:
         )
         self.canvas.pack()
         self.noise_check = tk.Checkbutton(
-            master,
+            self.content_frame,
             text="Přidávat šum",
             variable=self.noise_var,
             bg=BG_COLOR,
@@ -86,7 +115,7 @@ class LetterCollectorApp:
         self.canvas.bind("<B1-Motion>", self.draw_on_canvas)
         self.canvas.bind("<ButtonRelease-1>", self.reset_last_coords)
 
-        self.button_frame = tk.Frame(master, bg=BG_COLOR)
+        self.button_frame = tk.Frame(self.content_frame, bg=BG_COLOR)
         self.button_frame.pack(pady=10)
 
         self.button_width = max(8, CANVAS_SIZE // 20)
@@ -133,7 +162,7 @@ class LetterCollectorApp:
         master.bind("<KeyRelease-space>", self.on_space_release)
 
         self.stats_canvas = tk.Canvas(
-            master,
+            self.content_frame,
             width=CANVAS_SIZE,
             height=CANVAS_SIZE,
             bg="black",
@@ -144,6 +173,225 @@ class LetterCollectorApp:
         )
 
         self.new_letter()
+
+    def _create_sidebar(self):
+        """Create the settings sidebar."""
+        self.sidebar = tk.Frame(self.main_frame, bg=SIDEBAR_BG, width=180)
+        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.sidebar.pack_propagate(False)
+
+        # Title
+        title = tk.Label(
+            self.sidebar,
+            text="⚙ Nastavení",
+            font=("Arial", 14, "bold"),
+            bg=SIDEBAR_BG,
+            fg=FG_COLOR,
+        )
+        title.pack(pady=(15, 20), padx=10)
+
+        # Mode selection
+        mode_label = tk.Label(
+            self.sidebar,
+            text="Režim výběru:",
+            font=("Arial", 11),
+            bg=SIDEBAR_BG,
+            fg=FG_COLOR,
+        )
+        mode_label.pack(anchor="w", padx=15, pady=(0, 5))
+
+        self.random_radio = tk.Radiobutton(
+            self.sidebar,
+            text="Náhodně",
+            variable=self.alphabetical_mode,
+            value=False,
+            bg=SIDEBAR_BG,
+            fg=FG_COLOR,
+            selectcolor=SIDEBAR_BG,
+            activebackground=SIDEBAR_BG,
+            activeforeground=FG_COLOR,
+            highlightthickness=0,
+            font=("Arial", 10),
+            command=self._on_mode_change,
+        )
+        self.random_radio.pack(anchor="w", padx=25)
+
+        self.alpha_radio = tk.Radiobutton(
+            self.sidebar,
+            text="Abecedně (A→Z)",
+            variable=self.alphabetical_mode,
+            value=True,
+            bg=SIDEBAR_BG,
+            fg=FG_COLOR,
+            selectcolor=SIDEBAR_BG,
+            activebackground=SIDEBAR_BG,
+            activeforeground=FG_COLOR,
+            highlightthickness=0,
+            font=("Arial", 10),
+            command=self._on_mode_change,
+        )
+        self.alpha_radio.pack(anchor="w", padx=25)
+
+        # Separator
+        sep1 = tk.Frame(self.sidebar, height=1, bg=CANVAS_BORDER)
+        sep1.pack(fill=tk.X, padx=15, pady=15)
+
+        # Repeat count
+        repeat_label = tk.Label(
+            self.sidebar,
+            text="Opakování písmene:",
+            font=("Arial", 11),
+            bg=SIDEBAR_BG,
+            fg=FG_COLOR,
+        )
+        repeat_label.pack(anchor="w", padx=15, pady=(0, 5))
+
+        # Repeat count buttons
+        repeat_frame = tk.Frame(self.sidebar, bg=SIDEBAR_BG)
+        repeat_frame.pack(padx=15, pady=(0, 5))
+
+        self.repeat_minus_btn = tk.Button(
+            repeat_frame,
+            text="-",
+            width=3,
+            command=self._decrease_repeat,
+            bg=BUTTON_BG,
+            fg=BUTTON_FG,
+            activebackground=BUTTON_ACTIVE_BG,
+            activeforeground=BUTTON_ACTIVE_FG,
+            relief="flat",
+            font=("Arial", 12, "bold"),
+        )
+        self.repeat_minus_btn.pack(side=tk.LEFT, padx=2)
+
+        self.repeat_display = tk.Label(
+            repeat_frame,
+            textvariable=self.repeat_count,
+            font=("Arial", 16, "bold"),
+            bg=SIDEBAR_BG,
+            fg="#4a9eff",
+            width=3,
+        )
+        self.repeat_display.pack(side=tk.LEFT, padx=5)
+
+        self.repeat_plus_btn = tk.Button(
+            repeat_frame,
+            text="+",
+            width=3,
+            command=self._increase_repeat,
+            bg=BUTTON_BG,
+            fg=BUTTON_FG,
+            activebackground=BUTTON_ACTIVE_BG,
+            activeforeground=BUTTON_ACTIVE_FG,
+            relief="flat",
+            font=("Arial", 12, "bold"),
+        )
+        self.repeat_plus_btn.pack(side=tk.LEFT, padx=2)
+
+        # Quick presets
+        preset_label = tk.Label(
+            self.sidebar,
+            text="Rychlá volba:",
+            font=("Arial", 10),
+            bg=SIDEBAR_BG,
+            fg="#888888",
+        )
+        preset_label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        preset_frame = tk.Frame(self.sidebar, bg=SIDEBAR_BG)
+        preset_frame.pack(padx=15)
+
+        for val in [1, 3, 5, 10]:
+            btn = tk.Button(
+                preset_frame,
+                text=str(val),
+                width=3,
+                command=lambda v=val: self._set_repeat(v),
+                bg=BUTTON_BG,
+                fg=BUTTON_FG,
+                activebackground=BUTTON_ACTIVE_BG,
+                activeforeground=BUTTON_ACTIVE_FG,
+                relief="flat",
+                font=("Arial", 10),
+            )
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # Separator
+        sep2 = tk.Frame(self.sidebar, height=1, bg=CANVAS_BORDER)
+        sep2.pack(fill=tk.X, padx=15, pady=15)
+
+        # Reset button (for alphabetical mode)
+        self.reset_btn = tk.Button(
+            self.sidebar,
+            text="Začít od A",
+            command=self._reset_to_a,
+            width=12,
+            bg=BUTTON_BG,
+            fg=BUTTON_FG,
+            activebackground=BUTTON_ACTIVE_BG,
+            activeforeground=BUTTON_ACTIVE_FG,
+            relief="flat",
+            font=("Arial", 10),
+        )
+        self.reset_btn.pack(pady=5)
+
+        # Current position display (for alphabetical mode)
+        self.position_label = tk.Label(
+            self.sidebar,
+            text="",
+            font=("Arial", 10),
+            bg=SIDEBAR_BG,
+            fg="#888888",
+        )
+        self.position_label.pack(pady=(5, 10))
+
+    def _on_mode_change(self):
+        """Called when mode changes between random and alphabetical."""
+        if self.alphabetical_mode.get():
+            self.current_letter_index = 0
+            self.current_repeat = 0
+        self.new_letter()
+
+    def _increase_repeat(self):
+        if self.repeat_count.get() < 20:
+            self.repeat_count.set(self.repeat_count.get() + 1)
+            self._update_progress_display()
+
+    def _decrease_repeat(self):
+        if self.repeat_count.get() > 1:
+            self.repeat_count.set(self.repeat_count.get() - 1)
+            self._update_progress_display()
+
+    def _set_repeat(self, value):
+        self.repeat_count.set(value)
+        self._update_progress_display()
+
+    def _reset_to_a(self):
+        """Reset to letter A."""
+        self.current_letter_index = 0
+        self.current_repeat = 0
+        self.new_letter()
+
+    def _update_progress_display(self):
+        """Update the progress label and position label."""
+        repeat = self.repeat_count.get()
+        
+        if self.alphabetical_mode.get():
+            letter = LETTERS[self.current_letter_index]
+            self.progress_label.config(
+                text=f"({self.current_repeat + 1}/{repeat})"
+            )
+            self.position_label.config(
+                text=f"Pozice: {letter} ({self.current_letter_index + 1}/26)"
+            )
+        else:
+            if repeat > 1:
+                self.progress_label.config(
+                    text=f"({self.current_repeat + 1}/{repeat})"
+                )
+            else:
+                self.progress_label.config(text="")
+            self.position_label.config(text="Režim: náhodný")
 
     def setup_directories(self):
         if not os.path.exists(LETTERS_DIR):
@@ -163,18 +411,25 @@ class LetterCollectorApp:
         return counts
 
     def new_letter(self):
-        """Vybere náhodné písmeno s preferencí pro méně zastoupené."""
-        counts = self._get_letter_counts()
-        total = sum(counts)
-
-        if total == 0:
-            self.target_letter = random.choice(LETTERS)
+        """Vybere písmeno podle aktuálního režimu."""
+        if self.alphabetical_mode.get():
+            # Alphabetical mode - use current index
+            self.target_letter = LETTERS[self.current_letter_index]
         else:
-            weights = [1.0 / (count + 1) for count in counts]
-            self.target_letter = random.choices(LETTERS, weights=weights, k=1)[0]
+            # Random mode with preference for less represented letters
+            counts = self._get_letter_counts()
+            total = sum(counts)
+
+            if total == 0:
+                self.target_letter = random.choice(LETTERS)
+            else:
+                weights = [1.0 / (count + 1) for count in counts]
+                self.target_letter = random.choices(LETTERS, weights=weights, k=1)[0]
 
         if not self.is_stats_view:
             self.label.config(text=self.draw_prompt_template.format(self.target_letter))
+        
+        self._update_progress_display()
 
     def start_draw(self, event):
         self.last_x, self.last_y = event.x, event.y
@@ -211,9 +466,32 @@ class LetterCollectorApp:
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, image=self.temp_noise_photo, anchor="nw")
 
+    def _advance_letter(self):
+        """Advance to next letter in alphabetical mode, or get new random letter."""
+        if self.alphabetical_mode.get():
+            self.current_repeat += 1
+            if self.current_repeat >= self.repeat_count.get():
+                # Move to next letter
+                self.current_repeat = 0
+                self.current_letter_index += 1
+                if self.current_letter_index >= len(LETTERS):
+                    # Completed full alphabet, start from A
+                    self.current_letter_index = 0
+                    messagebox.showinfo(
+                        "Hotovo!",
+                        "Prošli jste celou abecedu!\nZačínáme znovu od A."
+                    )
+        else:
+            # Random mode - always reset repeat counter
+            self.current_repeat += 1
+            if self.current_repeat >= self.repeat_count.get():
+                self.current_repeat = 0
+        
+        self.new_letter()
+
     def _post_save_reset(self) -> None:
         self.clear_canvas()
-        self.new_letter()
+        self._advance_letter()
         if self.is_stats_view:
             self.update_stats_display()
 
