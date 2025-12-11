@@ -1,0 +1,733 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk
+import os
+import glob
+import shutil
+import zipfile
+import tempfile
+import atexit
+import random
+
+# Dark UI palette matching LetterCollector
+BG_COLOR = "#2b2b2b"
+FG_COLOR = "#d8dde6"
+CANVAS_BORDER = "#43464a"
+BUTTON_BG = "#3b3f42"
+BUTTON_FG = "#e6e9ef"
+BUTTON_ACTIVE_BG = "#4a4f53"
+BUTTON_ACTIVE_FG = "#ffffff"
+BUTTON_BORDER = "#5a5d60"
+LISTBOX_BG = "#1e1e1e"
+LISTBOX_FG = "#d8dde6"
+LISTBOX_SELECT_BG = "#4a9eff"
+LISTBOX_SELECT_FG = "#ffffff"
+
+MAX_SOURCES = 99
+MAX_SAMPLES_PER_SOURCE = 9999
+NUM_CLASSES = 26
+
+# Letters A-Z
+LETTERS = [chr(ord('A') + i) for i in range(26)]
+
+
+class DataSource:
+    """Represents a single data source (directory or ZIP archive)."""
+
+    def __init__(self, source_id, source_type, display_name, data_path, temp_dir=None):
+        self.id = source_id
+        self.type = source_type  # 'dir' or 'zip'
+        self.display_name = display_name
+        self.data_path = data_path
+        self.temp_dir = temp_dir
+        self.stats = self._compute_stats()
+
+    def _compute_stats(self):
+        """Count BMP files in each class subdirectory."""
+        stats = {}
+        for idx, letter in enumerate(LETTERS):
+            class_dir = os.path.join(self.data_path, letter)
+            if os.path.isdir(class_dir):
+                bmp_files = glob.glob(os.path.join(class_dir, "*.bmp"))
+                stats[idx] = len(bmp_files)
+            else:
+                stats[idx] = 0
+        return stats
+
+    def get_total_samples(self):
+        """Return total number of samples across all classes."""
+        return sum(self.stats.values())
+
+    def cleanup(self):
+        """Remove temporary directory if this source was extracted from ZIP."""
+        if self.temp_dir and os.path.exists(self.temp_dir):
+            try:
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                print(f"Warning: Could not remove temp dir {self.temp_dir}: {e}")
+
+
+class LetterComposerApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Letter Composer")
+        master.geometry("850x700")
+        master.config(padx=15, bg=BG_COLOR)
+        # Add top padding manually
+        tk.Frame(master, height=15, bg=BG_COLOR).pack()
+
+        self.sources = []
+        self.next_source_id = 1
+
+        # Split configuration
+        self.train_ratio = tk.DoubleVar(value=0.7)
+        self.val_ratio = tk.DoubleVar(value=0.2)
+        self.test_ratio = tk.DoubleVar(value=0.1)
+        self.seed_var = tk.IntVar(value=42)
+
+        # Register cleanup on exit
+        atexit.register(self.cleanup_all_sources)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        """Build the main UI."""
+        # Title
+        title_label = tk.Label(
+            self.master,
+            text="Letter Composer",
+            font=("Arial", 24, "bold"),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        title_label.pack(pady=(0, 10))
+
+        # Instructions
+        instr_label = tk.Label(
+            self.master,
+            text="Sloučení a rozdělení datasetů z různých instancí LetterCollector",
+            font=("Arial", 12),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        instr_label.pack(pady=(0, 15))
+
+        # Sources frame
+        sources_frame = tk.Frame(self.master, bg=BG_COLOR)
+        sources_frame.pack(fill=tk.X, pady=(0, 10))
+
+        sources_label = tk.Label(
+            sources_frame,
+            text="Zdroje dat",
+            font=("Arial", 14),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        sources_label.pack(anchor="w", pady=(0, 5))
+
+        # Listbox with scrollbar (fixed height)
+        listbox_frame = tk.Frame(sources_frame, bg=BG_COLOR)
+        listbox_frame.pack(fill=tk.X)
+
+        scrollbar = tk.Scrollbar(listbox_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.sources_listbox = tk.Listbox(
+            listbox_frame,
+            bg=LISTBOX_BG,
+            fg=LISTBOX_FG,
+            selectbackground=LISTBOX_SELECT_BG,
+            selectforeground=LISTBOX_SELECT_FG,
+            font=("Courier", 9),
+            yscrollcommand=scrollbar.set,
+            highlightthickness=1,
+            highlightbackground=CANVAS_BORDER,
+            bd=0,
+            height=8,
+        )
+        self.sources_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        scrollbar.config(command=self.sources_listbox.yview)
+
+        # Buttons for source management
+        btn_frame = tk.Frame(self.master, bg=BG_COLOR)
+        btn_frame.pack(pady=(10, 10))
+
+        btn_width = 16
+
+        self.add_dir_btn = self._create_button(btn_frame, "Přidat adresář", self.add_directory, width=btn_width)
+        self.add_dir_btn.pack(side=tk.LEFT, padx=5)
+
+        self.add_zip_btn = self._create_button(btn_frame, "Přidat ZIP", self.add_zip, width=btn_width)
+        self.add_zip_btn.pack(side=tk.LEFT, padx=5)
+
+        self.remove_btn = self._create_button(btn_frame, "Odebrat", self.remove_source, width=btn_width)
+        self.remove_btn.pack(side=tk.LEFT, padx=5)
+
+        self.preview_btn = self._create_button(btn_frame, "Náhled vzorků", self.show_preview, width=btn_width)
+        self.preview_btn.pack(side=tk.LEFT, padx=5)
+
+        # Split configuration
+        split_frame = tk.Frame(self.master, bg=BG_COLOR)
+        split_frame.pack(fill=tk.X, pady=(10, 10))
+
+        split_label = tk.Label(
+            split_frame,
+            text="Rozdělení datasetu",
+            font=("Arial", 14),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        split_label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+        # Train slider
+        tk.Label(split_frame, text="Train:", font=("Arial", 11), bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="w", padx=(0, 10))
+        self.train_scale = tk.Scale(
+            split_frame,
+            from_=0.0,
+            to=1.0,
+            resolution=0.05,
+            orient=tk.HORIZONTAL,
+            variable=self.train_ratio,
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+            highlightthickness=0,
+            troughcolor=LISTBOX_BG,
+            command=self._on_ratio_change,
+            length=200,
+        )
+        self.train_scale.grid(row=1, column=1, sticky="ew", padx=(0, 10))
+        self.train_count_label = tk.Label(split_frame, text="70% (0)", font=("Arial", 10), bg=BG_COLOR, fg=FG_COLOR, width=15, anchor="w")
+        self.train_count_label.grid(row=1, column=2, sticky="w")
+
+        # Val slider
+        tk.Label(split_frame, text="Val:", font=("Arial", 11), bg=BG_COLOR, fg=FG_COLOR).grid(row=2, column=0, sticky="w", padx=(0, 10))
+        self.val_scale = tk.Scale(
+            split_frame,
+            from_=0.0,
+            to=1.0,
+            resolution=0.05,
+            orient=tk.HORIZONTAL,
+            variable=self.val_ratio,
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+            highlightthickness=0,
+            troughcolor=LISTBOX_BG,
+            command=self._on_ratio_change,
+            length=200,
+        )
+        self.val_scale.grid(row=2, column=1, sticky="ew", padx=(0, 10))
+        self.val_count_label = tk.Label(split_frame, text="20% (0)", font=("Arial", 10), bg=BG_COLOR, fg=FG_COLOR, width=15, anchor="w")
+        self.val_count_label.grid(row=2, column=2, sticky="w")
+
+        # Test slider
+        tk.Label(split_frame, text="Test:", font=("Arial", 11), bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="w", padx=(0, 10))
+        self.test_scale = tk.Scale(
+            split_frame,
+            from_=0.0,
+            to=1.0,
+            resolution=0.05,
+            orient=tk.HORIZONTAL,
+            variable=self.test_ratio,
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+            highlightthickness=0,
+            troughcolor=LISTBOX_BG,
+            command=self._on_ratio_change,
+            length=200,
+        )
+        self.test_scale.grid(row=3, column=1, sticky="ew", padx=(0, 10))
+        self.test_count_label = tk.Label(split_frame, text="10% (0)", font=("Arial", 10), bg=BG_COLOR, fg=FG_COLOR, width=15, anchor="w")
+        self.test_count_label.grid(row=3, column=2, sticky="w")
+
+        # Validation indicator
+        self.validation_label = tk.Label(
+            split_frame,
+            text="✓ Součet: 100%",
+            font=("Arial", 10, "bold"),
+            bg=BG_COLOR,
+            fg="#4a9eff",
+        )
+        self.validation_label.grid(row=4, column=1, columnspan=2, sticky="e", pady=(5, 10))
+
+        # Seed slider
+        tk.Label(split_frame, text="Seed:", font=("Arial", 11), bg=BG_COLOR, fg=FG_COLOR).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=(10, 0))
+        self.seed_scale = tk.Scale(
+            split_frame,
+            from_=1,
+            to=100,
+            resolution=1,
+            orient=tk.HORIZONTAL,
+            variable=self.seed_var,
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+            highlightthickness=0,
+            troughcolor=LISTBOX_BG,
+            length=200,
+        )
+        self.seed_scale.grid(row=5, column=1, sticky="ew", padx=(0, 10), pady=(10, 0))
+        self.seed_value_label = tk.Label(split_frame, text="(reprodukce)", font=("Arial", 10), bg=BG_COLOR, fg=FG_COLOR, width=15, anchor="w")
+        self.seed_value_label.grid(row=5, column=2, sticky="w", pady=(10, 0))
+
+        split_frame.columnconfigure(1, weight=1)
+
+        # Visual separator
+        separator = tk.Frame(self.master, height=2, bg=CANVAS_BORDER)
+        separator.pack(fill=tk.X, pady=(15, 0))
+
+        # Compose button
+        self.compose_btn = self._create_button(self.master, "Komponovat a uložit", self.compose_dataset, width=25, height=2)
+        self.compose_btn.pack(pady=(30, 30))
+
+    def _create_button(self, parent, text, command, width=15, height=None):
+        """Create a styled button."""
+        btn_config = {
+            "text": text,
+            "command": command,
+            "width": width,
+            "bg": BUTTON_BG,
+            "fg": BUTTON_FG,
+            "activebackground": BUTTON_ACTIVE_BG,
+            "activeforeground": BUTTON_ACTIVE_FG,
+            "relief": "flat",
+            "bd": 0,
+            "highlightthickness": 1,
+            "highlightbackground": BUTTON_BORDER,
+            "highlightcolor": BUTTON_BORDER,
+            "font": ("Arial", 11),
+        }
+        if height is not None:
+            btn_config["height"] = height
+
+        btn = tk.Button(parent, **btn_config)
+        return btn
+
+    def add_directory(self):
+        """Add a directory as a data source."""
+        if len(self.sources) >= MAX_SOURCES:
+            messagebox.showerror("Chyba", f"Maximální počet zdrojů je {MAX_SOURCES}.")
+            return
+
+        program_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(program_dir)
+
+        initial_dir = parent_dir
+        shared_data_path = os.path.join(parent_dir, "shared", "data")
+
+        if os.path.exists(shared_data_path):
+            initial_dir = shared_data_path
+
+        dir_path = filedialog.askdirectory(
+            title="Vyberte adresář s daty",
+            initialdir=initial_dir
+        )
+        if not dir_path:
+            return
+
+        data_path = self._detect_structure(dir_path)
+        if not data_path:
+            messagebox.showerror(
+                "Neplatná struktura",
+                "Adresář neobsahuje očekávanou strukturu dat (A/, B/, ... Z/)."
+            )
+            return
+
+        source = DataSource(
+            source_id=self.next_source_id,
+            source_type='dir',
+            display_name=os.path.basename(dir_path),
+            data_path=data_path,
+        )
+
+        self._add_source(source)
+
+    def add_zip(self):
+        """Add a ZIP archive as a data source."""
+        if len(self.sources) >= MAX_SOURCES:
+            messagebox.showerror("Chyba", f"Maximální počet zdrojů je {MAX_SOURCES}.")
+            return
+
+        program_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(program_dir)
+
+        zip_path = filedialog.askopenfilename(
+            title="Vyberte ZIP archiv",
+            initialdir=parent_dir,
+            filetypes=[("ZIP archiv", "*.zip"), ("Všechny soubory", "*.*")]
+        )
+        if not zip_path:
+            return
+
+        temp_dir = tempfile.mkdtemp(prefix="lettercomposer_")
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+        except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            messagebox.showerror("Chyba", f"Nelze rozbalit ZIP archiv: {e}")
+            return
+
+        data_path = self._detect_structure(temp_dir)
+        if not data_path:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            messagebox.showerror(
+                "Neplatná struktura",
+                "ZIP archiv neobsahuje očekávanou strukturu dat."
+            )
+            return
+
+        source = DataSource(
+            source_id=self.next_source_id,
+            source_type='zip',
+            display_name=os.path.basename(zip_path),
+            data_path=data_path,
+            temp_dir=temp_dir,
+        )
+
+        self._add_source(source)
+
+    def _detect_structure(self, root_path):
+        """
+        Detect the data structure in the given path.
+        Supports A/, B/, ..., Z/ directories.
+        Returns the path containing letter directories, or None if not found.
+        """
+        if self._has_class_dirs(root_path):
+            return root_path
+
+        for root, dirs, files in os.walk(root_path):
+            depth = root[len(root_path):].count(os.sep)
+            if depth > 3:
+                continue
+
+            if self._has_class_dirs(root):
+                return root
+
+        return None
+
+    def _has_class_dirs(self, path):
+        """Check if path contains subdirectories named A-Z."""
+        if not os.path.isdir(path):
+            return False
+
+        found_classes = 0
+        for letter in LETTERS:
+            class_dir = os.path.join(path, letter)
+            if os.path.isdir(class_dir):
+                found_classes += 1
+
+        # Require at least 13 class directories (half of 26)
+        return found_classes >= 13
+
+    def _add_source(self, source):
+        """Add a source to the list and update UI."""
+        self.sources.append(source)
+        self.next_source_id += 1
+
+        # Update listbox with inline statistics (compact for 26 letters)
+        stats_str = "".join(f"{source.stats[i]:02d} " for i in range(NUM_CLASSES))
+        display_text = f"[{source.id:02d}] {source.get_total_samples():4} vzorků | {stats_str}"
+        self.sources_listbox.insert(tk.END, display_text)
+
+        self._update_split_counts()
+
+    def remove_source(self):
+        """Remove selected source from the list."""
+        selection = self.sources_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Upozornění", "Vyberte zdroj k odebrání.")
+            return
+
+        idx = selection[0]
+        source = self.sources[idx]
+
+        source.cleanup()
+
+        del self.sources[idx]
+        self.sources_listbox.delete(idx)
+
+        self._update_split_counts()
+
+    def _on_ratio_change(self, *args):
+        """Called when any ratio slider changes."""
+        self._update_split_counts()
+        self._validate_ratios()
+
+    def _validate_ratios(self):
+        """Validate that ratios sum to approximately 1.0."""
+        total = self.train_ratio.get() + self.val_ratio.get() + self.test_ratio.get()
+        is_valid = abs(total - 1.0) < 0.01
+
+        if is_valid:
+            self.validation_label.config(
+                text=f"✓ Součet: {total*100:.0f}%",
+                fg="#4a9eff",
+            )
+        else:
+            self.validation_label.config(
+                text=f"⚠ Součet: {total*100:.0f}% (musí být 100%)",
+                fg="#ff6b6b",
+            )
+
+    def _update_split_counts(self):
+        """Update the displayed sample counts for each split."""
+        total_samples = sum(source.get_total_samples() for source in self.sources)
+
+        train_count = int(total_samples * self.train_ratio.get())
+        val_count = int(total_samples * self.val_ratio.get())
+        test_count = int(total_samples * self.test_ratio.get())
+
+        self.train_count_label.config(text=f"{self.train_ratio.get()*100:.0f}% ({train_count} vzorků)")
+        self.val_count_label.config(text=f"{self.val_ratio.get()*100:.0f}% ({val_count} vzorků)")
+        self.test_count_label.config(text=f"{self.test_ratio.get()*100:.0f}% ({test_count} vzorků)")
+
+    def show_preview(self):
+        """Open a window showing random samples from each source."""
+        if not self.sources:
+            messagebox.showwarning("Upozornění", "Nejprve přidejte nějaké zdroje.")
+            return
+
+        preview_window = tk.Toplevel(self.master)
+        preview_window.title("Náhled vzorků")
+        preview_window.config(bg=BG_COLOR, padx=10, pady=10)
+
+        SAMPLE_SIZE = 48  # Smaller for 26 columns
+
+        # Header row with letter labels
+        tk.Label(preview_window, text="", bg=BG_COLOR).grid(row=0, column=0)
+        for idx, letter in enumerate(LETTERS):
+            lbl = tk.Label(
+                preview_window,
+                text=letter,
+                font=("Arial", 10, "bold"),
+                bg=BG_COLOR,
+                fg=FG_COLOR,
+            )
+            lbl.grid(row=0, column=idx + 1, padx=1, pady=1)
+
+        # Rows for each source
+        for row_idx, source in enumerate(self.sources, start=1):
+            src_lbl = tk.Label(
+                preview_window,
+                text=f"[{source.id:02d}]",
+                font=("Courier", 9),
+                bg=BG_COLOR,
+                fg=FG_COLOR,
+            )
+            src_lbl.grid(row=row_idx, column=0, padx=3, pady=1)
+
+            for idx, letter in enumerate(LETTERS):
+                class_dir = os.path.join(source.data_path, letter)
+                bmp_files = glob.glob(os.path.join(class_dir, "*.bmp"))
+
+                if bmp_files:
+                    sample_path = random.choice(bmp_files)
+
+                    try:
+                        img = Image.open(sample_path)
+                        img = img.resize((SAMPLE_SIZE, SAMPLE_SIZE), Image.NEAREST)
+                        photo = ImageTk.PhotoImage(img)
+
+                        canvas = tk.Canvas(
+                            preview_window,
+                            width=SAMPLE_SIZE,
+                            height=SAMPLE_SIZE,
+                            bg="black",
+                            highlightthickness=1,
+                            highlightbackground=CANVAS_BORDER,
+                        )
+                        canvas.create_image(0, 0, image=photo, anchor="nw")
+                        canvas.image = photo
+                        canvas.grid(row=row_idx, column=idx + 1, padx=1, pady=1)
+                    except Exception:
+                        canvas = tk.Canvas(
+                            preview_window,
+                            width=SAMPLE_SIZE,
+                            height=SAMPLE_SIZE,
+                            bg="black",
+                            highlightthickness=1,
+                            highlightbackground=CANVAS_BORDER,
+                        )
+                        canvas.grid(row=row_idx, column=idx + 1, padx=1, pady=1)
+                else:
+                    canvas = tk.Canvas(
+                        preview_window,
+                        width=SAMPLE_SIZE,
+                        height=SAMPLE_SIZE,
+                        bg="#1e1e1e",
+                        highlightthickness=1,
+                        highlightbackground=CANVAS_BORDER,
+                    )
+                    canvas.grid(row=row_idx, column=idx + 1, padx=1, pady=1)
+
+    def compose_dataset(self):
+        """Compose the final dataset from all sources with train/val/test split."""
+        if not self.sources:
+            messagebox.showwarning("Upozornění", "Nejprve přidejte nějaké zdroje.")
+            return
+
+        total_ratio = self.train_ratio.get() + self.val_ratio.get() + self.test_ratio.get()
+        if abs(total_ratio - 1.0) >= 0.01:
+            messagebox.showerror("Chyba", f"Součet poměrů musí být 100% (aktuálně {total_ratio*100:.0f}%).")
+            return
+
+        program_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(program_dir)
+        shared_data_path = os.path.join(parent_dir, "shared", "data")
+
+        initial_dir = parent_dir
+        if os.path.exists(shared_data_path):
+            initial_dir = shared_data_path
+
+        output_dir = filedialog.askdirectory(
+            title="Vyberte výstupní adresář pro komponovaný dataset",
+            initialdir=initial_dir,
+        )
+        if not output_dir:
+            return
+
+        program_dir = os.path.abspath(os.path.dirname(__file__))
+        output_abs = os.path.abspath(output_dir)
+
+        if os.path.normcase(output_abs) == os.path.normcase(program_dir):
+            messagebox.showerror(
+                "Neplatný adresář",
+                "Nelze uložit dataset přímo do složky programu.\n\n"
+                f"Složka programu: {program_dir}\n\n"
+                "Vyberte prosím jinou složku nebo vytvořte podsložku."
+            )
+            return
+
+        # If directory exists and has files, inform user that files will be ADDED (not deleted)
+        if os.path.exists(output_dir) and os.path.isdir(output_dir) and os.listdir(output_dir):
+            if not messagebox.askyesno(
+                "Složka není prázdná",
+                f"Adresář '{output_dir}' již obsahuje soubory.\n\n"
+                f"Nové vzorky budou PŘIDÁNY k existujícím (původní data zůstanou zachována).\n\n"
+                f"Chcete pokračovat?"
+            ):
+                return
+            # NOTE: We do NOT delete existing files - new files will be added alongside them
+
+        # Create output structure: train/val/test with A-Z subdirectories
+        for split in ['train', 'val', 'test']:
+            for letter in LETTERS:
+                os.makedirs(os.path.join(output_dir, split, letter), exist_ok=True)
+
+        # Progress window
+        progress_window = tk.Toplevel(self.master)
+        progress_window.title("Komponování datasetu")
+        progress_window.config(bg=BG_COLOR, padx=20, pady=20)
+        progress_window.transient(self.master)
+        progress_window.grab_set()
+
+        progress_label = tk.Label(
+            progress_window,
+            text="Zpracování tříd...",
+            font=("Arial", 12),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        progress_label.pack(pady=(0, 10))
+
+        progress_bar = ttk.Progressbar(
+            progress_window,
+            length=400,
+            mode='determinate',
+        )
+        progress_bar.pack(pady=(0, 10))
+
+        progress_detail = tk.Label(
+            progress_window,
+            text="Písmeno A / Z",
+            font=("Arial", 10),
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+        )
+        progress_detail.pack()
+
+        seed = self.seed_var.get()
+        random.seed(seed)
+
+        total_copied = {'train': 0, 'val': 0, 'test': 0}
+        errors = []
+
+        # Process each letter separately (stratified split)
+        for idx, letter in enumerate(LETTERS):
+            progress_detail.config(text=f"Písmeno {letter} ({idx + 1} / {NUM_CLASSES})")
+            progress_bar['value'] = int((idx / NUM_CLASSES) * 100)
+            progress_window.update()
+
+            all_files = []
+            for source in self.sources:
+                source_prefix = source.id
+                class_dir = os.path.join(source.data_path, letter)
+                bmp_files = sorted(glob.glob(os.path.join(class_dir, "*.bmp")))
+
+                for bmp_file in bmp_files:
+                    basename = os.path.basename(bmp_file)
+                    try:
+                        original_num = int(os.path.splitext(basename)[0])
+                    except ValueError:
+                        errors.append(f"Nelze zpracovat soubor {bmp_file} (neplatný název)")
+                        continue
+
+                    if original_num > MAX_SAMPLES_PER_SOURCE:
+                        errors.append(f"Soubor {bmp_file} má číslo > {MAX_SAMPLES_PER_SOURCE}")
+                        continue
+
+                    new_filename = f"{source_prefix:02d}{original_num:04d}.bmp"
+                    all_files.append((bmp_file, new_filename))
+
+            random.shuffle(all_files)
+
+            n = len(all_files)
+            train_end = int(n * self.train_ratio.get())
+            val_end = train_end + int(n * self.val_ratio.get())
+
+            train_files = all_files[:train_end]
+            val_files = all_files[train_end:val_end]
+            test_files = all_files[val_end:]
+
+            for split_name, file_list in [('train', train_files), ('val', val_files), ('test', test_files)]:
+                for src_path, new_filename in file_list:
+                    dest_path = os.path.join(output_dir, split_name, letter, new_filename)
+                    try:
+                        shutil.copy2(src_path, dest_path)
+                        total_copied[split_name] += 1
+                    except Exception as e:
+                        errors.append(f"Chyba při kopírování {src_path}: {e}")
+
+        progress_bar['value'] = 100
+        progress_detail.config(text="Hotovo")
+        progress_window.update()
+        progress_window.after(500, progress_window.destroy)
+
+        result_msg = (
+            f"Dataset zkompilován do '{output_dir}':\n\n"
+            f"Train: {total_copied['train']} vzorků\n"
+            f"Val:   {total_copied['val']} vzorků\n"
+            f"Test:  {total_copied['test']} vzorků\n"
+            f"Celkem: {sum(total_copied.values())} vzorků\n"
+            f"Seed: {seed}"
+        )
+
+        if errors:
+            result_msg += f"\n\nPočet chyb: {len(errors)}"
+            if len(errors) <= 5:
+                result_msg += "\n" + "\n".join(errors)
+            else:
+                result_msg += f"\n(zobrazeno prvních 5)\n" + "\n".join(errors[:5])
+
+        messagebox.showinfo("Hotovo", result_msg)
+
+    def cleanup_all_sources(self):
+        """Cleanup all temporary directories."""
+        for source in self.sources:
+            source.cleanup()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = LetterComposerApp(root)
+    root.mainloop()
