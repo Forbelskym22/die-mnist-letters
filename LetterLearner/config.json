@@ -1,0 +1,11 @@
+{
+  "epochs": 20,
+  "batch_size": 64,
+  "learning_rate": 0.001,
+  "val_ratio": 0.2,
+  "test_ratio": 0.1,
+  "step_size": 10,
+  "lr_gamma": 0.5,
+  "dropout": 0.2,
+  "seed": 44
+}
