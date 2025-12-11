@@ -620,19 +620,16 @@ class DigitComposerApp:
             )
             return
 
-        # Check if directory exists and is not empty
-        if os.path.exists(output_dir):
-            if os.path.isdir(output_dir) and os.listdir(output_dir):
-                # Directory exists and is NOT empty
-                if not messagebox.askyesno(
-                    "Složka není prázdná",
-                    f"Adresář '{output_dir}' již obsahuje soubory.\n\n"
-                    f"Chcete odstranit veškerý obsah a pokračovat?"
-                ):
-                    return  # User cancelled
-                # User confirmed - delete contents
-                shutil.rmtree(output_dir, ignore_errors=True)
-            # Otherwise: directory exists but is empty - continue without dialog
+        # If directory exists and has files, inform user that files will be ADDED (not deleted)
+        if os.path.exists(output_dir) and os.path.isdir(output_dir) and os.listdir(output_dir):
+            if not messagebox.askyesno(
+                "Složka není prázdná",
+                f"Adresář '{output_dir}' již obsahuje soubory.\n\n"
+                f"Nové vzorky budou PŘIDÁNY k existujícím (původní data zůstanou zachována).\n\n"
+                f"Chcete pokračovat?"
+            ):
+                return  # User cancelled
+            # NOTE: We do NOT delete existing files - new files will be added alongside them
 
         # Create output structure: train/val/test with 0-9 subdirectories
         for split in ['train', 'val', 'test']:
