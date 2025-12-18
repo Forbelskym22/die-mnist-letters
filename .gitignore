@@ -25,17 +25,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project specific - shared data and models
-shared/data/collected/[0-9]/
-shared/data/synthetic/[0-9]/
-shared/data/synthetic/train/
-shared/data/synthetic/val/
-shared/data/synthetic/test/
-shared/data/composed/train/
-shared/data/composed/val/
-shared/data/composed/test/
-shared/models/run_*/
-shared/tests/*.json
+# Shared data directory (all collected, synthetic, and model data)
+shared/
 
 # (OLD)MNIST reference - ignore downloaded data and trained models
 (OLD)MNIST/data/
